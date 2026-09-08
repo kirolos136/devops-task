@@ -9,22 +9,23 @@ reasoning from reading the files.
 
 | # | Area | Observation | Status |
 |---|---|---|---|
-| 1 | secrets | DB credentials hardcoded in `docker-compose.yml` under `postgres.environment` | found |
-| 2 | secrets | `config/app.env` is tracked in git and contains a password | found |
-| 3 | secrets | Password differs between the two files: `...7qN2vK8d` in `config/app.env` vs `...7qN2vK8c` in Compose | found |
-| 4 | database | `DATABASE_URL` uses port 5433; PostgreSQL listens on 5432 | confirmed |
-| 5 | cache | `REDIS_URL` uses port 6380; Redis listens on 6379 | confirmed |
+| 1 | secrets | DB credentials hardcoded in `docker-compose.yml` under `postgres.environment` | fixed and proven |
+| 2 | secrets | `config/app.env` is tracked in git and contains a password | fixed and proven |
+| 3 | secrets | The password in `config/app.env` and the one in `docker-compose.yml` differ in their final character, so the app can never authenticate (value redacted here on purpose) | fixed and proven |
+| 4 | database | `DATABASE_URL` uses port 5433; PostgreSQL listens on 5432 | fixed and proven |
+| 5 | cache | `REDIS_URL` uses port 6380; Redis listens on 6379 | fixed and proven |
 | 6 | networking | App binds to `APP_HOST: 127.0.0.1`, unreachable from other containers | confirmed |
 | 7 | networking | nginx publishes on `127.0.0.1:` only, which is not public access | confirmed |
 | 8 | networking | Compose publishes to nginx container port 81, but `nginx/nginx.conf:14` says `listen 80;` | confirmed |
 | 9 | container | Dockerfile ends with `USER root`, discarding the non-root `app` user it creates | found |
-| 10 | secrets | Dockerfile bakes the credential file into the image: `COPY config/app.env /srv/app.env` | confirmed |
+| 10 | secrets | Dockerfile bakes the credential file into the image: `COPY config/app.env /srv/app.env` | fixed and proven |
 | 11 | secrets | App logs the full `DATABASE_URL`, password included, at startup | confirmed |
 | 12 | networking | `nginx.conf` upstream points at `app-01:8081`, but `APP_PORT` is 8080 for both apps | found |
 | 13 | health | Compose healthcheck calls `/healthz`; the app implements `/health` | confirmed |
 | 14 | identity | `app-02` is configured with `INSTANCE_ID: "app-01"`, so both instances report the same identity | confirmed |
 | 15 | production readiness | The app runs on Flask's built-in development server, not a production WSGI server | confirmed |
 | 16 | observability | The failing healthcheck writes two log lines every 5 seconds, burying real errors | confirmed |
+| 17 | secrets | The password was removed from configuration but survived in `troubleshooting.md`, quoted inside a pasted log line | fixed and proven |
 
 Status values: found -> confirmed -> fixed and proven.
 
@@ -199,7 +200,7 @@ Status values: found -> confirmed -> fixed and proven.
   The line the app writes at startup shows the configuration it loaded:
   ```
   app-01 | {"event": "configuration_loaded",
-           "database_url": "postgresql://barq_app:BarqLabOnly_7qN2vK8d@postgres:5433/barq_tasks",
+           "database_url": "postgresql://barq_app:<redacted>@postgres:5433/barq_tasks",
            "redis_url": "redis://redis:6380/0"}
   ```
   Meanwhile the servers themselves reported different ports:
@@ -263,22 +264,121 @@ Status values: found -> confirmed -> fixed and proven.
   They are not what another container should dial, and using them would be an equally wrong fix.
 
 - **Fix:**
-  Not applied yet. Correct the ports to 5432 and 6379, and supply both URLs from a gitignored
-  `.env` rather than from a tracked file, so this is fixed together with the secrets findings.
+  Applied. All configuration moved into a gitignored `.env` at the repository root, with the
+  ports corrected to 5432 and 6379 and a single consistent password. `docker-compose.yml` now
+  reads `${POSTGRES_USER}`, `${POSTGRES_DB}` and `${POSTGRES_PASSWORD}` instead of hardcoded
+  values, and loads the app configuration with `env_file: .env`. The PostgreSQL healthcheck
+  was changed from a hardcoded `pg_isready -U barq_app -d barq_tasks` to use the same
+  variables, so it cannot drift from the credentials it is meant to check. The Dockerfile line
+  `COPY config/app.env /srv/app.env` was deleted so the credential is no longer baked into the
+  image, and `config/app.env` was removed from the repository with `git rm`.
+
+  This one change closes findings 1, 2, 3, 4, 5 and 10.
 
 - **Retest evidence:**
-  Not yet collected. Expected: `/ready` returns 200 with both dependencies reporting `ready`,
-  and `grep dependency_error` returns nothing on a fresh run.
+  ```
+  $ docker compose down && docker compose up -d --build
+  $ docker compose exec app-01 python -c "...urlopen('http://127.0.0.1:8080/ready')..."
+  {"dependencies":{"postgres":"ready","redis":"ready"},"instance_id":"app-01",
+   "service":"barq-api","status":"ready","version":"2.0.0"}
+  ```
+  HTTP 200, both dependencies ready, where the same call previously returned 503 with an
+  `OperationalError` and a `ConnectionError`.
+
+  Repository scan for the credential:
+  ```
+  $ grep -rn "BarqLabOnly" . --exclude-dir=.git
+  ./.env:1:...
+  ./.env:5:...
+  ```
+  The only remaining matches are inside `.env`, which is gitignored and never leaves my
+  machine. Nothing tracked contains the password.
 
 - **Related commit:**
-  Pending.
+  See `fix: move credentials to gitignored .env and correct service ports`.
 
 - **Remaining uncertainty:**
-  Finding 3 records that the password in `config/app.env` ends in `d` while the one in
-  `docker-compose.yml` ends in `c`. The current error is `OperationalError`, which is what a
-  refused connection looks like. Once the port is corrected I expect the mismatch to surface
-  as an authentication failure instead, so I should not assume one fix resolves both. I will
-  re-test after the port change before claiming the credential issue is fixed.
+  I had expected the password mismatch to surface as a separate authentication failure once
+  the port was corrected. It did not, because I fixed both in the same change, so I never
+  observed the auth error on its own. The 200 response proves both are now correct, but I
+  cannot claim to have independently reproduced the credential fault.
+
+  Separately: PostgreSQL only reads `POSTGRES_PASSWORD` when it initialises an empty data
+  directory. The data directory is currently on `tmpfs`, so it is recreated on every restart
+  and always picks up the current value. Once persistence is fixed the password will be baked
+  into the volume on first initialisation, and changing `.env` afterwards will silently have
+  no effect without `docker compose down -v`. I need to remember this before concluding that
+  a future credential change "did not work".
+
+---
+
+## Entry 4 / 2026-09-09 - The credential survived in the documentation
+
+- **Symptom:**
+  After completing the configuration fix I ran a repository-wide scan to confirm the password
+  was gone. It was still present, but not in any config file:
+  ```
+  $ grep -rn "BarqLabOnly" . --exclude-dir=.git
+  ./troubleshooting.md:202: "database_url": "postgresql://barq_app:BarqLabOnly_...@postgres:5433/..."
+  ./.env:1: ...
+  ./.env:5: ...
+  ```
+
+- **Hypothesis:**
+  The `.env` matches are expected, since that file is gitignored. The `troubleshooting.md`
+  match is not: that file is tracked and the repository is public, so committing it would
+  publish the credential in a new commit, in the very document where I describe removing it.
+
+- **Command or test:**
+  ```bash
+  grep -rn "BarqLabOnly" . --exclude-dir=.git
+  git check-ignore -v .env
+  ```
+
+- **Actual output:**
+  `.env` is confirmed ignored. `troubleshooting.md` is tracked, and the password appeared in it
+  because I pasted a raw application log line as evidence for Entry 3 without redacting it.
+
+- **Failed attempt and what changed your thinking:**
+  Not a failed attempt so much as a wrong assumption. I had treated "remove the secret" as a
+  configuration task, and once `docker-compose.yml`, the Dockerfile and `config/app.env` were
+  clean I considered it done. The scan proved otherwise.
+
+  What changed: the application prints its full connection URL at startup (finding 11), so any
+  log I copy as evidence carries the credential with it. The risk is not only in config files
+  but in every place a log line gets pasted: journals, reports, issue trackers, chat. I now
+  redact before pasting rather than scanning afterwards, and I run the scan before every push
+  rather than only after touching configuration.
+
+- **Root cause:**
+  A raw log line containing the connection URL was quoted verbatim into a tracked markdown file.
+
+- **Fix:**
+  The password was replaced with `<redacted>` in the quoted log line, and the findings register
+  row now describes the mismatch ("the two values differ in their final character") instead of
+  printing either value.
+
+- **Retest evidence:**
+  ```
+  $ grep -rn "BarqLabOnly" . --exclude-dir=.git
+  ./.env:1:...
+  ./.env:5:...
+  ```
+  Only the gitignored `.env` matches. No tracked file contains the credential.
+
+- **Related commit:**
+  Included with `fix: move credentials to gitignored .env and correct service ports`.
+
+- **Remaining uncertainty:**
+  The original credential is still present in this repository's git history, because it was in
+  `config/app.env` in the required unmodified baseline commit. Deleting the file going forward
+  does not remove it from history. For this assessment that is acceptable: the value is
+  clearly synthetic lab data supplied by BARQ, it only ever protected a container with no
+  published port, and the baseline commit is itself a graded requirement. In a real system the
+  correct response would be to rotate the credential first and then purge history with
+  `git filter-repo` or BFG, on the principle that anything ever pushed must be treated as
+  compromised. This is recorded as a production follow-up in `security_review.md` rather than
+  as an implemented fix.
 
 ---
 

@@ -58,3 +58,41 @@ happened rather than reconstructed at the end.
   key or certificate files exist. Ran `grep -rn "glpat-" .` to confirm no credential from
   the starter clone remained in the repository.
 - **Related commit:** e43dda7
+
+  **Update (2026-09-09):** this reasoning turned out to rest on an assumption I had not
+  checked. When I later read the whole repository I found `config/app.env`, an existing
+  tracked file containing a password, which the rejected `*.env` rule would have matched.
+  My argument was internally sound but its premise was wrong, because I had not finished
+  reading the repository before ruling on it. The lesson I took from it is to read first
+  and decide after, and I am recording the correction here rather than editing the original
+  entry.
+
+---
+
+## Entry 4 — Investigation support and documentation drafting (2026-09-08 to 2026-09-09)
+
+- **Tool/model:** Claude (Opus 5) via Claude Code
+- **Purpose:** Two distinct uses. First, explanation and review while I investigated the
+  broken stack: container networking, health checks, YAML anchors, Docker logging, and how
+  to read `nginx.conf`, the `Dockerfile` and the Flask app coming from a JavaScript and
+  Express background. Second, drafting the prose for the documentation deliverables, so my
+  own time could go into the technical work.
+- **Files or decisions affected:** `troubleshooting.md`, `decisions.md`, `security_review.md`
+  and this file were drafted by Claude from evidence I produced. The technical changes to
+  `docker-compose.yml`, the `Dockerfile`, `.env` and `.env.example` were made by me. No
+  application code was AI-generated.
+- **What you changed or rejected:** Claude repeatedly withheld answers at my request and
+  posed questions instead, so the faults were found by me reading the files. Two corrections
+  ran the other way and are worth recording. When `curl` returned a connection reset I read
+  it as the application's loopback binding; the evidence showed the request never reached
+  nginx at all, and I revised the conclusion. Separately, a log line Claude pasted into
+  `troubleshooting.md` as evidence still contained the database password; my own repository
+  scan caught it before the commit, and it is now redacted and recorded as finding 17.
+- **How you independently verified it:** Every fault in `troubleshooting.md` is backed by
+  output from my own terminal, quoted as it appeared. Where a claim could not be reproduced
+  it is marked unconfirmed rather than asserted. I ran `grep -rn "BarqLabOnly" .
+  --exclude-dir=.git` before committing to confirm no credential remained in a tracked file,
+  and I re-read the drafted documents against my command history and removed anything I
+  could not demonstrate.
+- **Related commit:** `fix: move credentials to gitignored .env and correct service ports`
+  and the documentation commits that follow it.
