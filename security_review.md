@@ -105,7 +105,7 @@ entry states how to verify it, so nothing here has to be taken on trust.
 
 ---
 
-## 6. Containers run as root - PENDING
+## 6. Containers ran as root - IMPLEMENTED
 
 - **Risk and evidence:** The Dockerfile creates a dedicated non-root user
   (`groupadd --gid 10001 app && useradd --uid 10001 --gid app`), then discards it on the
@@ -114,7 +114,9 @@ entry states how to verify it, so nothing here has to be taken on trust.
   container, which materially improves an attacker's chances of escaping to the host or abusing
   a mounted path. Creating the user and then not using it is worse than not creating it, because
   it reads as hardened when it is not.
-- **Implemented fix / commit:** None yet. Planned: change `USER root` to `USER app`.
+- **Implemented fix / commit:** `USER root` changed to `USER app`.
+  Commit: `fix: bind app to all interfaces, correct healthcheck path, drop root`.
+  Proven with `docker compose exec app-01 whoami`, which returns `app`.
 - **Production follow-up:** Enforce this rather than rely on review: add a policy check in CI
   that fails any image whose configured user is root, and drop all Linux capabilities the
   workload does not need.
@@ -201,7 +203,7 @@ entry states how to verify it, so nothing here has to be taken on trust.
 
 ---
 
-## 11. A broken healthcheck floods the logs and hides real errors - PENDING
+## 11. A broken healthcheck flooded the logs and hid real errors - IMPLEMENTED
 
 - **Risk and evidence:** The Compose healthcheck requests `/healthz`, which the application does
   not implement. Every 5 seconds it produces a 404 and two log lines, roughly 34,000 lines a
@@ -211,7 +213,9 @@ entry states how to verify it, so nothing here has to be taken on trust.
 - **Impact:** Noise at this volume buries genuine errors, inflates log storage cost, and trains
   operators to ignore the log stream. It also leaves both application containers permanently
   marked unhealthy, so the health status carries no information.
-- **Implemented fix / commit:** None yet. Planned: point the healthcheck at `/health`.
+- **Implemented fix / commit:** The healthcheck now requests `/health`.
+  Commit: `fix: bind app to all interfaces, correct healthcheck path, drop root`.
+  Both app containers report healthy and the repeating 404 lines have stopped.
 - **Production follow-up:** Alert on healthcheck failure rather than letting it fail silently
   forever, and keep noisy diagnostics out of the level operators actually read.
 - **How to verify:** `docker compose ps` shows both application containers healthy, and the
@@ -245,8 +249,10 @@ entry states how to verify it, so nothing here has to be taken on trust.
   while nginx still cannot reach it.
 - **Impact:** A green status that does not correspond to a working service is worse than a red
   one, because it suppresses investigation. Orchestrators route traffic based on this signal.
-- **Implemented fix / commit:** The underlying binding fault is scheduled for correction to
-  `0.0.0.0`. The structural point remains true afterwards and is recorded here deliberately.
+- **Implemented fix / commit:** The binding was corrected to `0.0.0.0`, and reachability was
+  verified from a different container rather than trusting the health status:
+  `docker compose exec nginx wget -qO- http://app-01:8080/health` returns 200. The structural
+  point remains true afterwards and is recorded here deliberately.
 - **Production follow-up:** Keep the liveness check local, but add an external readiness probe
   that traverses the real network path a user's request would take, so binding and network
   faults are detected rather than hidden.

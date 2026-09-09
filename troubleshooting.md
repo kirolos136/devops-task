@@ -14,17 +14,17 @@ reasoning from reading the files.
 | 3 | secrets | The password in `config/app.env` and the one in `docker-compose.yml` differ in their final character, so the app can never authenticate (value redacted here on purpose) | fixed and proven |
 | 4 | database | `DATABASE_URL` uses port 5433; PostgreSQL listens on 5432 | fixed and proven |
 | 5 | cache | `REDIS_URL` uses port 6380; Redis listens on 6379 | fixed and proven |
-| 6 | networking | App binds to `APP_HOST: 127.0.0.1`, unreachable from other containers | confirmed |
+| 6 | networking | App binds to `APP_HOST: 127.0.0.1`, unreachable from other containers | fixed and proven |
 | 7 | networking | nginx publishes on `127.0.0.1:` only, which is not public access | confirmed |
 | 8 | networking | Compose publishes to nginx container port 81, but `nginx/nginx.conf:14` says `listen 80;` | confirmed |
-| 9 | container | Dockerfile ends with `USER root`, discarding the non-root `app` user it creates | found |
+| 9 | container | Dockerfile ends with `USER root`, discarding the non-root `app` user it creates | fixed and proven |
 | 10 | secrets | Dockerfile bakes the credential file into the image: `COPY config/app.env /srv/app.env` | fixed and proven |
 | 11 | secrets | App logs the full `DATABASE_URL`, password included, at startup | confirmed |
 | 12 | networking | `nginx.conf` upstream points at `app-01:8081`, but `APP_PORT` is 8080 for both apps | found |
-| 13 | health | Compose healthcheck calls `/healthz`; the app implements `/health` | confirmed |
+| 13 | health | Compose healthcheck calls `/healthz`; the app implements `/health` | fixed and proven |
 | 14 | identity | `app-02` is configured with `INSTANCE_ID: "app-01"`, so both instances report the same identity | confirmed |
 | 15 | production readiness | The app runs on Flask's built-in development server, not a production WSGI server | confirmed |
-| 16 | observability | The failing healthcheck writes two log lines every 5 seconds, burying real errors | confirmed |
+| 16 | observability | The failing healthcheck writes two log lines every 5 seconds, burying real errors | fixed and proven |
 | 17 | secrets | The password was removed from configuration but survived in `troubleshooting.md`, quoted inside a pasted log line | fixed and proven |
 | 18 | persistence | PostgreSQL's real data directory was on `tmpfs` (RAM) while the named volume sat unused at `/var/lib/postgresql/backup` | fixed and proven |
 | 19 | persistence | Redis ran with `--save "" --appendonly no`, disabling both persistence mechanisms, and had no volume | fixed and proven |
@@ -434,6 +434,64 @@ Status values: found -> confirmed -> fixed and proven.
   the volume is destroyed with `docker compose down -v`. I have not yet tested recreating the
   containers with `docker compose up --force-recreate`, which is what the brief actually asks
   to be demonstrated.
+
+---
+
+## Entry 6 / 2026-09-09 - App reachable, healthy for the right reason, and non-root
+
+- **Symptom:** Three related faults. Compose set `APP_HOST: "127.0.0.1"`, so the app listened
+  only on loopback and no other container could reach it. The healthcheck requested `/healthz`,
+  which does not exist, so both app containers were permanently unhealthy and produced a 404
+  every 5 seconds. The Dockerfile created a non-root `app` user and then discarded it with
+  `USER root`.
+
+- **Hypothesis:** `127.0.0.1` is the correct default for a development server on a shared
+  machine, but wrong inside a container, which is already network-isolated. There it means
+  unreachable by anything. I expected the healthcheck to keep passing after the path fix even
+  if the binding stayed wrong, because the check runs inside the container where loopback
+  resolves to the app itself.
+
+- **Command or test:**
+  ```bash
+  docker compose down && docker compose up -d --build
+  docker compose ps
+  docker compose exec app-01 whoami
+  docker compose exec nginx wget -qO- http://app-01:8080/health
+  ```
+
+- **Actual output:**
+  ```
+  app-01   Up About a minute (healthy)
+  app-02   Up About a minute (healthy)
+
+  $ docker compose exec app-01 whoami
+  app
+
+  $ docker compose exec nginx wget -qO- http://app-01:8080/health
+  {"instance_id":"app-01","service":"barq-api","status":"alive","version":"2.0.0"}
+  ```
+
+- **Failed attempt and what changed your thinking:** None here. The point worth recording is
+  which test actually proves what. `docker compose ps` showing healthy proves only that the app
+  answers itself, because the healthcheck runs inside the container and connects to loopback.
+  The reply from `nginx` is the only one of these that proves the app is reachable across the
+  network, and it is the check that could not have passed before this change.
+
+- **Root cause:** A development-server default (`127.0.0.1`) applied in a container context; a
+  healthcheck pointed at a path the application does not implement; and a `USER root` line
+  overriding the non-root user created three lines above it.
+
+- **Fix:** `APP_HOST: "0.0.0.0"`, healthcheck path `/health`, and `USER app` in the Dockerfile.
+
+- **Retest evidence:** As quoted above. The repeating 404 lines also stopped, and the request
+  log level for the healthcheck changed from WARN to INFO, since the app logs WARN only for
+  status codes of 400 and above.
+
+- **Related commit:** `fix: bind app to all interfaces, correct healthcheck path, drop root`.
+
+- **Remaining uncertainty:** The stack is still not reachable from the host, because nginx is
+  published to container port 81 while it listens on 80 (finding 8), and the nginx upstream
+  points at `app-01:8081` while the app listens on 8080 (finding 12). Both are addressed next.
 
 ---
 
