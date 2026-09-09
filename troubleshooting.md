@@ -26,6 +26,8 @@ reasoning from reading the files.
 | 15 | production readiness | The app runs on Flask's built-in development server, not a production WSGI server | confirmed |
 | 16 | observability | The failing healthcheck writes two log lines every 5 seconds, burying real errors | confirmed |
 | 17 | secrets | The password was removed from configuration but survived in `troubleshooting.md`, quoted inside a pasted log line | fixed and proven |
+| 18 | persistence | PostgreSQL's real data directory was on `tmpfs` (RAM) while the named volume sat unused at `/var/lib/postgresql/backup` | fixed and proven |
+| 19 | persistence | Redis ran with `--save "" --appendonly no`, disabling both persistence mechanisms, and had no volume | fixed and proven |
 
 Status values: found -> confirmed -> fixed and proven.
 
@@ -33,8 +35,6 @@ Status values: found -> confirmed -> fixed and proven.
 
 - nginx is attached to the backend network; the brief says it must not reach PostgreSQL or Redis
 - PostgreSQL and Redis both publish host ports; the brief says they should not
-- Named volume mounts to `/var/lib/postgresql/backup` while `tmpfs` covers `/data`
-- Redis started with `--save "" --appendonly no`
 - `restart: "no"`, and no resource limits anywhere in the file
 - `depends_on` has no health conditions
 
@@ -379,6 +379,61 @@ Status values: found -> confirmed -> fixed and proven.
   `git filter-repo` or BFG, on the principle that anything ever pushed must be treated as
   compromised. This is recorded as a production follow-up in `security_review.md` rather than
   as an implemented fix.
+
+---
+
+## Entry 5 / 2026-09-09 - Nothing was actually persisted
+
+- **Symptom:** The stack looked configured for durability but was not. The named volume
+  `postgres-data` was mounted at `/var/lib/postgresql/backup`, a directory PostgreSQL never
+  writes to, while its real data directory `/var/lib/postgresql/data` was covered by `tmpfs`.
+  Redis ran with `--save "" --appendonly no` and had no volume at all.
+
+- **Hypothesis:** `tmpfs` is a filesystem in RAM, so every database write would be lost on
+  container recreation, and the volume that appeared to provide durability held nothing.
+  Redis with both mechanisms disabled would reset the counter to zero on every restart.
+
+- **Command or test:**
+  ```bash
+  docker compose down -v && docker compose up -d --build
+  # POST a record, read /counter
+  docker compose down          # no -v
+  docker compose up -d
+  # read /records and /counter back
+  ```
+
+- **Actual output:** Before the fix the data directory was recreated from scratch on every
+  start, visible as PostgreSQL running `initdb` and re-executing `01-init.sql` each time.
+
+- **Failed attempt and what changed your thinking:** None. What was worth noticing is that
+  the configuration looked correct at a glance: a named volume was declared and mounted, just
+  at the wrong path. A declared volume is not evidence of persistence, only a test is.
+
+- **Root cause:** The volume was mounted at a path nothing writes to, the real data directory
+  was a RAM disk, and both Redis persistence mechanisms were switched off.
+
+- **Fix:** Mounted `postgres-data` at `/var/lib/postgresql/data`, deleted the `tmpfs` line,
+  enabled Redis append-only mode and gave it a `redis-data` volume at `/data`.
+
+- **Retest evidence:**
+  ```
+  # before restart
+  {"record":{"id":3,"title":"persistence test"}}
+  {"counter":1}
+
+  # after docker compose down (no -v) and up
+  {"records":[{"id":1,...},{"id":2,...},{"id":3,"title":"persistence test"}]}
+  {"counter":2}
+  ```
+  The record survived and the counter continued from its previous value instead of resetting.
+
+- **Related commit:** `fix: persist postgres data on named volume and enable redis persistence`.
+
+- **Remaining uncertainty:** PostgreSQL now runs `initdb` only once, when the volume is empty.
+  From here, changes to `POSTGRES_PASSWORD` or to `database/init.sql` will have no effect until
+  the volume is destroyed with `docker compose down -v`. I have not yet tested recreating the
+  containers with `docker compose up --force-recreate`, which is what the brief actually asks
+  to be demonstrated.
 
 ---
 

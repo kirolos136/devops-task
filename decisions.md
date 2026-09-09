@@ -133,9 +133,26 @@ than guessed at.
 
 ---
 
+## Decision 7 - Redis persists with the append-only file, not snapshots
+
+- **Choice:** `--appendonly yes`, with a named `redis-data` volume mounted at `/data`.
+- **Why:** The only thing in Redis is the `barq:requests` counter, and nothing else in the
+  system knows that number. It cannot be recomputed, so losing it loses information. AOF logs
+  every write and bounds the loss to about a second; snapshots would lose everything since the
+  last one.
+- **Alternative:** RDB snapshots (`--save "60 1000"`), or both together.
+- **Trade-off:** AOF writes a larger file and restarts more slowly because it replays the log.
+  At this data size neither cost is measurable.
+- **Evidence / commit:** `fix: persist postgres data on named volume and enable redis
+  persistence`. Proven by the counter continuing from 1 to 2 across a restart instead of
+  resetting.
+- **Production improvement:** Run both AOF and RDB, as Redis recommends, and back the snapshot
+  up off-host. Prove restores with a scheduled drill rather than assuming they work.
+
+---
+
 ## Still open - to be decided and recorded
 
-- Redis persistence mode (append-only file vs snapshots) and the volume it writes to
 - Restart policy, and why `unless-stopped` rather than `always`
 - Specific CPU and memory limits per service, and the reasoning behind the numbers
 - nginx upstream timeouts, `max_fails` and `proxy_next_upstream` values

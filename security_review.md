@@ -178,7 +178,7 @@ entry states how to verify it, so nothing here has to be taken on trust.
 
 ---
 
-## 10. Application data does not survive a container restart - PENDING
+## 10. Application data did not survive a container restart - IMPLEMENTED
 
 - **Risk and evidence:** The named volume `postgres-data` is mounted at
   `/var/lib/postgresql/backup`, which PostgreSQL does not use, while its actual data directory
@@ -188,8 +188,11 @@ entry states how to verify it, so nothing here has to be taken on trust.
   recreated, and the volume that appears to provide durability holds nothing. The stack looks
   correctly configured for persistence and is not, which is the most dangerous kind of backup
   failure: it is only discovered when the data is needed.
-- **Implemented fix / commit:** None yet. Planned: mount the volume at the real data directory,
-  remove the tmpfs, and enable Redis persistence with its own volume.
+- **Implemented fix / commit:** `postgres-data` now mounts at `/var/lib/postgresql/data`, the
+  `tmpfs` line is deleted, and Redis runs with `--appendonly yes` on its own `redis-data`
+  volume. Commit: `fix: persist postgres data on named volume and enable redis persistence`.
+  Proven: a record created before `docker compose down` was still present after `up`, and the
+  counter continued from its previous value.
 - **Production follow-up:** Persistence configuration must be proven, not assumed. Run a
   scheduled restore drill that recreates the containers and asserts a known record still exists,
   and alert if the check ever fails.
