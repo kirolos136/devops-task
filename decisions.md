@@ -151,6 +151,46 @@ than guessed at.
 
 ---
 
+## Decision 8 - Shared upstream state with `zone`, and real failover settings
+
+- **Choice:** `zone application_pool 64k;` in the upstream block,
+  `max_fails=3 fail_timeout=10s` on each server, and `proxy_next_upstream error timeout`.
+- **Why:** nginx runs one worker per CPU core, and without `zone` each worker keeps private
+  upstream state. That broke load balancing outright (every worker started at the first server,
+  so all traffic went to app-01) and made `max_fails` far less sensitive than configured, since
+  failures had to accumulate on one individual worker. `max_fails=0` meant a dead backend was
+  never benched; `proxy_next_upstream off` meant a request landing on it was never retried
+  elsewhere. Together those two made surviving a backend loss impossible, which the brief
+  requires me to demonstrate.
+- **Alternative:** `worker_processes 1`, which also gives a single cursor. Simpler, but throws
+  away multi-core capacity to fix a state-sharing problem.
+- **Trade-off:** `zone` costs a small fixed amount of shared memory. 3 strikes in 10 seconds
+  tolerates a brief blip without benching a healthy backend, while still reacting within a few
+  seconds to a real failure.
+- **Evidence / commit:** `fix: correct nginx port mapping, upstream ports and instance
+  identity`. Ten consecutive requests now alternate between app-01 and app-02.
+- **Production improvement:** Add active health checks rather than relying only on passive
+  failure counting, so a backend is removed before real user requests hit it.
+
+---
+
+## Decision 9 - Writes are deliberately not retried on another backend
+
+- **Choice:** Keep nginx's default of excluding non-idempotent methods from
+  `proxy_next_upstream`. POST requests are not retried elsewhere.
+- **Why:** If a backend accepts a POST and dies before responding, the record may already have
+  been created. Retrying it on another instance would create it twice. A visible 502 the client
+  can decide about is safer than a silent duplicate write.
+- **Alternative:** Add the `non_idempotent` flag so writes fail over too, which would make the
+  failure demonstration look cleaner.
+- **Trade-off:** During a backend outage, reads stay seamless but a write that lands on the
+  failed instance returns an error. I accept that visible failure rather than risk duplicate data.
+- **Evidence / commit:** Same commit. To be confirmed during the failure test.
+- **Production improvement:** Make writes idempotent with a client-supplied request key, so a
+  retry is provably safe and failover can then cover writes as well.
+
+---
+
 ## Still open - to be decided and recorded
 
 - Restart policy, and why `unless-stopped` rather than `always`

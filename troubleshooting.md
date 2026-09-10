@@ -15,19 +15,21 @@ reasoning from reading the files.
 | 4 | database | `DATABASE_URL` uses port 5433; PostgreSQL listens on 5432 | fixed and proven |
 | 5 | cache | `REDIS_URL` uses port 6380; Redis listens on 6379 | fixed and proven |
 | 6 | networking | App binds to `APP_HOST: 127.0.0.1`, unreachable from other containers | fixed and proven |
-| 7 | networking | nginx publishes on `127.0.0.1:` only, which is not public access | confirmed |
-| 8 | networking | Compose publishes to nginx container port 81, but `nginx/nginx.conf:14` says `listen 80;` | confirmed |
+| 7 | networking | nginx publishes on `127.0.0.1:` only, which is not public access | fixed and proven |
+| 8 | networking | Compose publishes to nginx container port 81, but `nginx/nginx.conf:14` says `listen 80;` | fixed and proven |
 | 9 | container | Dockerfile ends with `USER root`, discarding the non-root `app` user it creates | fixed and proven |
 | 10 | secrets | Dockerfile bakes the credential file into the image: `COPY config/app.env /srv/app.env` | fixed and proven |
 | 11 | secrets | App logs the full `DATABASE_URL`, password included, at startup | confirmed |
-| 12 | networking | `nginx.conf` upstream points at `app-01:8081`, but `APP_PORT` is 8080 for both apps | found |
+| 12 | networking | `nginx.conf` upstream points at `app-01:8081`, but `APP_PORT` is 8080 for both apps | fixed and proven |
 | 13 | health | Compose healthcheck calls `/healthz`; the app implements `/health` | fixed and proven |
-| 14 | identity | `app-02` is configured with `INSTANCE_ID: "app-01"`, so both instances report the same identity | confirmed |
+| 14 | identity | `app-02` is configured with `INSTANCE_ID: "app-01"`, so both instances report the same identity | fixed and proven |
 | 15 | production readiness | The app runs on Flask's built-in development server, not a production WSGI server | confirmed |
 | 16 | observability | The failing healthcheck writes two log lines every 5 seconds, burying real errors | fixed and proven |
 | 17 | secrets | The password was removed from configuration but survived in `troubleshooting.md`, quoted inside a pasted log line | fixed and proven |
 | 18 | persistence | PostgreSQL's real data directory was on `tmpfs` (RAM) while the named volume sat unused at `/var/lib/postgresql/backup` | fixed and proven |
 | 19 | persistence | Redis ran with `--save "" --appendonly no`, disabling both persistence mechanisms, and had no volume | fixed and proven |
+| 20 | availability | `max_fails=0` with `proxy_next_upstream off` meant nginx never benched a dead backend and never retried elsewhere | fixed and proven |
+| 21 | availability | The upstream had no `zone`, so each nginx worker kept private round-robin and failure state; all traffic went to app-01 | fixed and proven |
 
 Status values: found -> confirmed -> fixed and proven.
 
@@ -492,6 +494,68 @@ Status values: found -> confirmed -> fixed and proven.
 - **Remaining uncertainty:** The stack is still not reachable from the host, because nginx is
   published to container port 81 while it listens on 80 (finding 8), and the nginx upstream
   points at `app-01:8081` while the app listens on 8080 (finding 12). Both are addressed next.
+
+---
+
+## Entry 7 / 2026-09-10 - Load balancing that looked broken but was not
+
+- **Symptom:** After correcting the nginx port mapping, the upstream ports and `app-02`'s
+  `INSTANCE_ID`, the stack answered on port 8080 for the first time. But ten consecutive
+  requests to `/instance` all returned `app-01`.
+
+- **Hypothesis:** My first guess was that nginx held a stale IP for app-02 after a recreate, or
+  that app-02 had been marked down during a startup race.
+
+- **Command or test:**
+  ```bash
+  docker compose exec nginx wget -qO- http://app-02:8080/instance
+  docker compose logs nginx | tail -15
+  ```
+
+- **Actual output:** nginx reached app-02 directly without any problem, returning
+  `{"instance_id":"app-02",...}`. Every proxied request logged the same single upstream:
+  ```
+  "upstream":"172.19.0.3:8080","upstream_status":"200"
+  ```
+
+- **Failed attempt and what changed your thinking:** Both my hypotheses were wrong, and the
+  access log ruled them out in one read. A single address with no comma means no retry happened,
+  so nothing was failing over. `upstream_status: 200` means nothing was failing at all. And
+  app-02's address never appeared, so it was never *selected*. That is a different problem from
+  being unreachable or unhealthy, and it pointed at how nginx chooses a backend rather than at
+  the backend itself.
+
+- **Root cause:** `worker_processes auto` starts one worker per CPU core, and without a `zone`
+  directive each worker keeps its own private copy of the upstream state, including the
+  round-robin position and the `max_fails` counters. Each new connection landed on a different
+  worker, and every worker's first choice is the first server in the list. Round-robin was
+  working correctly, independently, from the start, in every worker.
+
+  The same applies to failure counting: a backend had to fail `max_fails` times on one
+  individual worker before that worker alone would bench it.
+
+- **Fix:** Added `zone application_pool 64k;` to the upstream block so all workers share one
+  cursor and one set of failure counters. Also set `max_fails=3 fail_timeout=10s` on both
+  servers (was `max_fails=0`, meaning a dead backend was never benched) and replaced
+  `proxy_next_upstream off` with `proxy_next_upstream error timeout`.
+
+- **Retest evidence:**
+  ```
+  $ docker compose restart nginx
+  $ for i in $(seq 10); do curl -s localhost:8080/instance | grep -o '"instance_id":"[^"]*"'; done
+  "instance_id":"app-01"
+  "instance_id":"app-02"
+  "instance_id":"app-01"
+  "instance_id":"app-02"
+  ... alternating for all 10
+  ```
+
+- **Related commit:** `fix: correct nginx port mapping, upstream ports and instance identity`.
+
+- **Remaining uncertainty:** `proxy_next_upstream` does not retry POST and other non-idempotent
+  methods by default, because a retried write could create a record twice. I have not yet tested
+  what a POST does when it lands on a stopped backend; I expect a 502 rather than a silent
+  failover, and I need to confirm that during the failure test rather than assume it.
 
 ---
 
