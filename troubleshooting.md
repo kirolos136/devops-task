@@ -30,13 +30,13 @@ reasoning from reading the files.
 | 19 | persistence | Redis ran with `--save "" --appendonly no`, disabling both persistence mechanisms, and had no volume | fixed and proven |
 | 20 | availability | `max_fails=0` with `proxy_next_upstream off` meant nginx never benched a dead backend and never retried elsewhere | fixed and proven |
 | 21 | availability | The upstream had no `zone`, so each nginx worker kept private round-robin and failure state; all traffic went to app-01 | fixed and proven |
+| 22 | networking | nginx was attached to the `backend` network, giving the internet-facing service a direct route to PostgreSQL and Redis | fixed and proven |
+| 23 | networking | PostgreSQL and Redis published host ports, allowing the application to be bypassed entirely from the host | fixed and proven |
 
 Status values: found -> confirmed -> fixed and proven.
 
 ## Open leads - not yet examined
 
-- nginx is attached to the backend network; the brief says it must not reach PostgreSQL or Redis
-- PostgreSQL and Redis both publish host ports; the brief says they should not
 - `restart: "no"`, and no resource limits anywhere in the file
 - `depends_on` has no health conditions
 
@@ -556,6 +556,80 @@ Status values: found -> confirmed -> fixed and proven.
   methods by default, because a retried write could create a record twice. I have not yet tested
   what a POST does when it lands on a stopped backend; I expect a 502 rather than a silent
   failover, and I need to confirm that during the failure test rather than assume it.
+
+---
+
+## Entry 8 / 2026-09-10 - Network isolation and unnecessary host ports
+
+- **Symptom:** nginx declared `networks: [frontend, backend]`, so the only internet-facing
+  service had a direct route to PostgreSQL and Redis. Both data services also published host
+  ports (`127.0.0.1:15432:5432` and `127.0.0.1:16379:6379`), which the brief forbids.
+
+- **Hypothesis:** nginx only ever forwards HTTP to the apps, so it has no reason to be on the
+  data network. The apps sit on both networks and are the only legitimate bridge. Removing the
+  published ports should change nothing functionally, because container-to-container traffic
+  uses the internal network and never touches a host port mapping.
+
+- **Command or test:**
+  ```bash
+  docker compose down && docker compose up -d
+  docker compose exec nginx getent hosts postgres
+  docker compose exec app-01 getent hosts postgres
+  docker ps --format '{{.Names}}	{{.Ports}}'
+  curl -s localhost:8080/ready
+  ```
+
+- **Actual output:**
+  ```
+  $ docker compose exec nginx getent hosts postgres
+  (no output)
+
+  $ docker compose exec app-01 getent hosts postgres
+  172.19.0.2      postgres
+
+  $ docker ps --format '{{.Names}}	{{.Ports}}'
+  nginx      0.0.0.0:8080->80/tcp
+  postgres   5432/tcp
+  redis      6379/tcp
+  app-01     8080/tcp
+  app-02     8080/tcp
+
+  $ curl -s localhost:8080/ready
+  {"dependencies":{"postgres":"ready","redis":"ready"},"instance_id":"app-01",...}
+  ```
+  Only nginx has a host mapping, shown by the arrow. The bare `5432/tcp` and `8080/tcp` entries
+  are container-internal listening ports, not published ones.
+
+- **Failed attempt and what changed your thinking:** No failed attempt, but I had a
+  misconception worth recording. I assumed the `ports:` lines were part of how the containers
+  reached each other, and that removing them might break the app's access to the database.
+  They are not: `ports:` only opens a path from the host into a container. Containers on a
+  shared network talk directly on the container's own port. The `/ready` response after the
+  deletion proves it.
+
+  I also assumed the `127.0.0.1:` prefix made those ports harmless. It limits access to the
+  host, but "the host" includes every process and user on that machine, and on a real server
+  anyone who can log into it. The port bypassed the application completely: no application
+  logic, no application-level authentication, no request logging.
+
+- **Root cause:** Over-broad network membership on nginx, and host port mappings that nothing
+  needed.
+
+- **Fix:** nginx attached to `frontend` only; both `ports:` lines deleted. The `backend`
+  network keeps `internal: true`, which blocks outbound access from the data layer. That is a
+  separate control from network membership: `internal` stops traffic leaving, while removing
+  nginx from the network stops lateral movement into the data layer.
+
+- **Retest evidence:** As quoted above. The negative and positive results together are the
+  proof: the same lookup fails from nginx and succeeds from app-01, so the isolation is real
+  rather than the test being broken.
+
+- **Related commit:** `fix: isolate nginx from backend network and unpublish data ports`.
+
+- **Remaining uncertainty:** DNS isolation proves nginx cannot resolve the service name. I have
+  not tested whether it could still reach the database by raw IP address, which would be the
+  stronger claim. Given the two networks are separate bridges I expect it cannot, but I have
+  not demonstrated it.
 
 ---
 

@@ -124,7 +124,7 @@ entry states how to verify it, so nothing here has to be taken on trust.
 
 ---
 
-## 7. PostgreSQL and Redis publish ports to the host - PENDING
+## 7. PostgreSQL and Redis published ports to the host - IMPLEMENTED
 
 - **Risk and evidence:** `ports: ["127.0.0.1:15432:5432"]` on postgres and
   `["127.0.0.1:16379:6379"]` on redis. The brief requires that only nginx publishes a port.
@@ -133,7 +133,9 @@ entry states how to verify it, so nothing here has to be taken on trust.
   needs a host mapping. The `127.0.0.1` prefix limits exposure to the host, which reduces but
   does not remove the problem: any local process or user can reach the database directly,
   bypassing the application entirely.
-- **Implemented fix / commit:** None yet. Planned: remove both `ports:` entries.
+- **Implemented fix / commit:** Both `ports:` entries deleted.
+  Commit: `fix: isolate nginx from backend network and unpublish data ports`.
+  `docker ps --format '{{.Names}}	{{.Ports}}'` now shows a host mapping for nginx only.
 - **Production follow-up:** Data stores should never be directly reachable from outside their
   network segment. Where operator access is genuinely required, provide it through a bastion or
   an authenticated proxy with audit logging, not a permanently open port.
@@ -142,7 +144,7 @@ entry states how to verify it, so nothing here has to be taken on trust.
 
 ---
 
-## 8. nginx is attached to the backend network - PENDING
+## 8. nginx was attached to the backend network - IMPLEMENTED
 
 - **Risk and evidence:** The nginx service declares `networks: [frontend, backend]`, giving the
   internet-facing component a direct route to PostgreSQL and Redis. The brief requires that
@@ -150,9 +152,12 @@ entry states how to verify it, so nothing here has to be taken on trust.
 - **Impact:** nginx is the only component exposed to the outside world and therefore the most
   likely to be compromised. Placing it on the data network removes the segmentation that would
   otherwise contain such a compromise, so a single nginx vulnerability reaches the database.
-- **Implemented fix / commit:** None yet. Planned: attach nginx to `frontend` only. The
-  `backend` network is already declared `internal: true`, which blocks outbound access from it
-  but does nothing to stop a member of that network reaching its peers.
+- **Implemented fix / commit:** nginx now declares `networks: [frontend]` only.
+  Commit: `fix: isolate nginx from backend network and unpublish data ports`.
+  Proven with a negative and a positive test: `docker compose exec nginx getent hosts postgres`
+  returns nothing, while the same lookup from `app-01` returns `172.19.0.2`. The `backend`
+  network keeps `internal: true`, which blocks outbound access but does nothing to stop a
+  member of that network reaching its peers, so both controls are needed.
 - **Production follow-up:** Treat network membership as least privilege: a service joins a
   segment only if it must talk to something on it. Verify the isolation with a test rather than
   by reading the config.
