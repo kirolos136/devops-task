@@ -32,13 +32,16 @@ reasoning from reading the files.
 | 21 | availability | The upstream had no `zone`, so each nginx worker kept private round-robin and failure state; all traffic went to app-01 | fixed and proven |
 | 22 | networking | nginx was attached to the `backend` network, giving the internet-facing service a direct route to PostgreSQL and Redis | fixed and proven |
 | 23 | networking | PostgreSQL and Redis published host ports, allowing the application to be bypassed entirely from the host | fixed and proven |
+| 24 | availability | `restart: "no"` on the app services, and no restart policy at all on postgres, redis or nginx | fixed and proven |
+| 25 | availability | No CPU or memory limits on any service, so one container could exhaust the host | fixed and proven |
+| 26 | availability | `depends_on` used the list form, which waits only for a container to start, not to become ready | fixed and proven |
 
 Status values: found -> confirmed -> fixed and proven.
 
-## Open leads - not yet examined
+## Open leads
 
-- `restart: "no"`, and no resource limits anywhere in the file
-- `depends_on` has no health conditions
+None outstanding. All findings above are either fixed and proven, or recorded in
+`security_review.md` with the reason they were deliberately not changed.
 
 ---
 
@@ -630,6 +633,71 @@ Status values: found -> confirmed -> fixed and proven.
   not tested whether it could still reach the database by raw IP address, which would be the
   stronger claim. Given the two networks are separate bridges I expect it cannot, but I have
   not demonstrated it.
+
+---
+
+## Entry 9 / 2026-09-12 - Restart policies, resource limits and ordered startup
+
+- **Symptom:** Three availability gaps. `restart: "no"` on the apps and no restart policy at all
+  on postgres, redis or nginx, so any crash stayed down until noticed. No CPU or memory limits
+  anywhere, so a single leaking container could exhaust the host. And `depends_on` in list form,
+  which waits only for a container to start.
+
+- **Hypothesis:** The list-form `depends_on` was my best explanation for an earlier symptom
+  where nginx appeared to send all traffic to one backend: nginx starting before the apps were
+  ready, probing them, and benching one. That turned out not to be the cause (Entry 7), but the
+  ordering problem is real regardless and needed fixing.
+
+- **Command or test:**
+  ```bash
+  docker stats --no-stream      # measure real usage before choosing limits
+  docker compose down && docker compose up -d
+  docker stats --no-stream      # confirm the limits applied
+  ```
+
+- **Actual output:** Idle usage measured before setting limits:
+  ```
+  nginx      14.5 MiB     postgres   35-38 MiB    redis   8-10 MiB
+  app-01     48-58 MiB    app-02     51-62 MiB
+  ```
+  After applying limits, the LIMIT column changed from the host total to the configured values:
+  ```
+  nginx      13.84MiB / 128MiB    10.81%
+  app-01     39.09MiB / 256MiB    15.27%
+  app-02     38.68MiB / 256MiB    15.11%
+  postgres   19.9MiB  / 512MiB     3.89%
+  redis      5.539MiB / 256MiB     2.16%
+  ```
+
+- **Failed attempt and what changed your thinking:** Nothing failed, but reading the measurements
+  changed how I chose the numbers. The app containers showed CPU spikes to 35-43%, which looked
+  like real load until I noticed the PID count rising from 2 to 3 at the same time. That third
+  process is the healthcheck starting a whole Python interpreter every five seconds. The apps
+  were idle; the spike was the check measuring itself. I sized CPU for that rather than for load
+  that does not exist.
+
+  I also nearly sized PostgreSQL from its idle figure of 35 MiB. Its `shared_buffers` setting
+  alone defaults to 128MB and is claimed under real use, so an idle reading understates it by a
+  wide margin. That is the one service where a tight limit produces OOM kills that look like
+  database faults.
+
+- **Root cause:** Defaults left unset: no restart policy, no limits, and startup ordering that
+  waits for existence rather than readiness.
+
+- **Fix:** `restart: "unless-stopped"` on every service. Memory limits of 128M for nginx, 256M
+  for each app and for redis, and 512M for postgres, with CPU quotas of 0.5 for everything except
+  postgres at 1.0. `depends_on` converted to the long form with `condition: service_healthy`, so
+  the apps wait for postgres and redis, and nginx waits for both apps.
+
+- **Retest evidence:** As quoted above. Startup is now visibly sequential rather than everything
+  launching at once.
+
+- **Related commit:** `feat: add restart policies, resource limits and health-gated startup`.
+
+- **Remaining uncertainty:** I have not load-tested the stack, so the limits are sized from idle
+  measurements plus headroom rather than from observed peak load. I also have not verified that a
+  container actually restarts after its main process is killed, which is the real test of the
+  restart policy.
 
 ---
 

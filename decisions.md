@@ -191,10 +191,62 @@ than guessed at.
 
 ---
 
+## Decision 10 - `unless-stopped` rather than `always`
+
+- **Choice:** `restart: "unless-stopped"` on every service.
+- **Why:** A crashed container should come back without waiting for a human. But `always` also
+  restarts a container I stopped deliberately, which would break the failure demonstration the
+  brief requires: stop one backend, show traffic continuing, then recover it. `unless-stopped`
+  recovers from crashes and respects an intentional stop.
+- **Alternative:** `always`, or `on-failure` to restart only on a non-zero exit.
+- **Trade-off:** After a host reboot, `unless-stopped` does not restart a container that was
+  deliberately stopped beforehand. That is the behaviour I want here.
+- **Evidence / commit:** `feat: add restart policies, resource limits and health-gated startup`.
+- **Production improvement:** Alert on restart loops. Automatic recovery is useful but it hides
+  a recurring fault if nobody is told it is happening.
+
+---
+
+## Decision 11 - Resource limits sized from measurement, not from round numbers
+
+- **Choice:** memory limits of 128M for nginx, 256M for each app and for redis, 512M for
+  postgres; CPU quotas of 0.5 everywhere except postgres at 1.0.
+- **Why:** I measured idle usage with `docker stats` first: nginx 14.5 MiB, redis 8-10 MiB,
+  postgres 35-38 MiB, apps 48-62 MiB. The limits are roughly four to eight times observed, which
+  leaves headroom for load while still catching a runaway process. PostgreSQL is deliberately the
+  outlier: its idle figure understates it, because `shared_buffers` alone defaults to 128MB and
+  each connection takes `work_mem` on top.
+- **Alternative:** No limits, or one uniform limit for every service. Both were tempting and both
+  ignore what the services actually do.
+- **Trade-off:** Limits sized from idle measurements plus headroom, not from load testing. If
+  real traffic is much heavier than this assessment's, they would need revisiting.
+- **Evidence / commit:** Same commit. `docker stats --no-stream` now shows each container against
+  its own limit rather than against the host total.
+- **Production improvement:** Derive limits from observed production percentiles, and alert on
+  containers approaching their memory ceiling before the kernel kills them.
+
+---
+
+## Decision 12 - Startup gated on health, not on existence
+
+- **Choice:** `depends_on` in long form with `condition: service_healthy`. The apps wait for
+  postgres and redis; nginx waits for both apps.
+- **Why:** The list form waits only for a container to start, not to be able to serve. PostgreSQL
+  takes several seconds to accept connections after its container exists, and nginx resolves its
+  upstreams at startup. Gating on the healthcheck removes a whole class of "works on the second
+  try" flakiness, and it matters more once CI is starting the stack unattended.
+- **Alternative:** Retry loops in the application, or a wait-for-it script in the entrypoint.
+  Both put orchestration logic somewhere it does not belong when Compose can express it directly.
+- **Trade-off:** Startup is slower and strictly sequential. That is the correct trade for a stack
+  that must come up unattended.
+- **Evidence / commit:** Same commit. Services now start in dependency order rather than all at
+  once.
+- **Production improvement:** Health-gated startup handles the first boot. It does not handle a
+  dependency failing later, which is what readiness probes and circuit breakers are for.
+
+---
+
 ## Still open - to be decided and recorded
 
-- Restart policy, and why `unless-stopped` rather than `always`
-- Specific CPU and memory limits per service, and the reasoning behind the numbers
-- nginx upstream timeouts, `max_fails` and `proxy_next_upstream` values
 - Two named app services rather than `--scale`, and how a third instance is added live
 - Whether to move off Flask's development server for the final submission

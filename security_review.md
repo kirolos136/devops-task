@@ -228,7 +228,7 @@ entry states how to verify it, so nothing here has to be taken on trust.
 
 ---
 
-## 12. No restart policies and no resource limits - PENDING
+## 12. No restart policies and no resource limits - IMPLEMENTED
 
 - **Risk and evidence:** The shared application configuration sets `restart: "no"`, and no
   service in `docker-compose.yml` declares CPU or memory limits.
@@ -236,8 +236,10 @@ entry states how to verify it, so nothing here has to be taken on trust.
   an outage. Without limits, one service can consume all host memory or CPU and take the rest of
   the stack with it; a memory leak in the application degrades the database instead of failing
   fast and being restarted.
-- **Implemented fix / commit:** None yet. Planned: a restart policy on every service and
-  explicit CPU and memory limits, with the chosen numbers justified in `decisions.md`.
+- **Implemented fix / commit:** `restart: "unless-stopped"` on every service, plus CPU and
+  memory limits sized from measured idle usage (see `decisions.md` decision 11).
+  Commit: `feat: add restart policies, resource limits and health-gated startup`.
+  `docker stats --no-stream` now shows each container against its own limit.
 - **Production follow-up:** Limits should be derived from observed usage rather than guessed,
   and paired with alerting on restart loops so that automatic recovery does not silently mask a
   recurring fault.
