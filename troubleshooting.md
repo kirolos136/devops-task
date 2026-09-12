@@ -38,6 +38,62 @@ reasoning from reading the files.
 
 Status values: found -> confirmed -> fixed and proven.
 
+## Cold start verification / 2026-09-12
+
+Run from a fully stopped stack with no manual ordering. Volumes were kept, not reset.
+
+```
+$ docker compose down && docker compose up -d
+ Container redis      Healthy    4.9s
+ Container postgres   Healthy    4.9s
+ Container app-01     Healthy   11.7s
+ Container app-02     Healthy   11.7s
+ Container nginx      Created    0.2s
+```
+Compose reports `Healthy` rather than `Started` because of the `condition: service_healthy`
+dependencies. The data layer becomes healthy first, the apps wait for it, and nginx waits for
+both apps.
+
+All six required endpoints, through nginx on the published port:
+
+```
+$ curl -s localhost:8080/
+{"instance_id":"app-01","message":"Welcome to BARQ Systems","service":"barq-api","version":"2.0.0"}
+
+$ curl -s localhost:8080/health
+{"instance_id":"app-02","service":"barq-api","status":"alive","version":"2.0.0"}
+
+$ curl -s localhost:8080/ready
+{"dependencies":{"postgres":"ready","redis":"ready"},"instance_id":"app-01",...,"status":"ready"}
+
+$ curl -s localhost:8080/counter
+{"counter":3,"instance_id":"app-02",...}
+
+$ curl -s -X POST localhost:8080/records -H 'Content-Type: application/json' -d '{"title":"cold start"}'
+{"instance_id":"app-01","record":{"id":4,"title":"cold start"},...}
+
+$ curl -s localhost:8080/records
+{"instance_id":"app-02","records":[{"id":1,...},{"id":2,...},{"id":3,"title":"persistence test"},
+                                   {"id":4,"title":"cold start"}],...}
+
+$ for i in $(seq 6); do curl -s localhost:8080/instance | grep -o '"instance_id":"[^"]*"'; done
+"instance_id":"app-02"
+"instance_id":"app-01"
+"instance_id":"app-02"
+"instance_id":"app-01"
+"instance_id":"app-02"
+"instance_id":"app-01"
+```
+
+Three things this run demonstrates beyond the endpoints answering:
+
+1. Requests were served by different instances throughout, and they agree on state. app-02
+   returned the record app-01 had just created, which is the point of keeping the application
+   stateless and holding all state in PostgreSQL and Redis.
+2. Record id 3 was created several changes earlier and has survived repeated `down` and `up`
+   cycles. The counter is at 3 rather than back at 1.
+3. No manual ordering or intervention was needed at any point.
+
 ## Open leads
 
 None outstanding. All findings above are either fixed and proven, or recorded in
