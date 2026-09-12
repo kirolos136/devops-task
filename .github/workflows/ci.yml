@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Create a throwaway .env for CI
+        run: |
+          cat > .env <<'EOF'
+          PUBLIC_PORT=8080
+          POSTGRES_USER=barq_app
+          POSTGRES_DB=barq_tasks
+          POSTGRES_PASSWORD=ci_only_not_a_real_secret
+          DATABASE_URL=postgresql://barq_app:ci_only_not_a_real_secret@postgres:5432/barq_tasks
+          REDIS_URL=redis://redis:6379/0
+          EOF
+
+      - name: Check the Compose file is valid
+        run: docker compose config --quiet
+
+      - name: Build and start the stack
+        run: docker compose up -d --build
+
+      - name: Show service status
+        run: docker compose ps
+
+      - name: Run validation
+        run: python3 validate.py
+
+      - name: Show logs if anything failed
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
