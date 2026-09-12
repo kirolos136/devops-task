@@ -35,6 +35,9 @@ jobs:
       - name: Run validation
         run: python3 validate.py
 
+      - name: Run failure test
+        run: python3 failure_test.py
+
       - name: Show logs if anything failed
         if: failure()
         run: docker compose logs
