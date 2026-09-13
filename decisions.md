@@ -246,6 +246,45 @@ than guessed at.
 
 ---
 
+## Decision 13 - Plain SQL dumps, restored with psql
+
+- **Choice:** `pg_dump --clean --if-exists` writing plain SQL to a timestamped file under
+  `backups/`, restored with `psql -v ON_ERROR_STOP=1`. Both tools are run inside the postgres
+  container with `docker compose exec -T`.
+- **Why:** Plain SQL is readable, so a backup can be inspected before trusting it. `--clean`
+  makes the dump self-sufficient: it drops and recreates rather than failing on an existing
+  table. Both tools already ship in the postgres image, so nothing needs installing. Timestamped
+  filenames mean a new backup never silently overwrites the last one.
+- **Alternative:** `pg_dump -Fc` custom format with `pg_restore`, which is compressed and allows
+  selective restore. Better for large databases; unnecessary here and not human-readable.
+- **Trade-off:** Plain SQL is larger and slower to restore at scale. At this size neither matters,
+  and readability is worth more.
+- **Evidence / commit:** `feat: add postgres backup and restore scripts with proven recovery`.
+  Proven by creating a record after the backup, restoring, and confirming that record disappeared
+  while the earlier five returned. The restore output also shows `setval 5`, confirming the ID
+  sequence is restored and not just the rows.
+- **Production improvement:** Schedule backups, store them off-host, and run an automated restore
+  drill that asserts a known record exists afterwards. An untested backup is not a backup.
+
+---
+
+## Decision 14 - `-T` on every non-interactive `docker compose exec`
+
+- **Choice:** Always pass `-T` when a script runs a command in a container.
+- **Why:** Without it Compose allocates a pseudo-terminal, which rewrites line endings and injects
+  control characters. That is helpful for a human at a keyboard and corrupting for piped data. A
+  backup taken without `-T` is silently malformed: the file exists, looks plausible, and fails at
+  restore time. CI has no terminal at all, so the same flag is required there.
+- **Alternative:** Omit it and rely on the default. Works interactively, fails everywhere else.
+- **Trade-off:** None. The flag is only needed when a human is not driving the command.
+- **Evidence / commit:** Used in `backup.sh`, `restore.sh` and the isolation checks in
+  `validate.py`.
+- **Production improvement:** Prefer running such commands through a dedicated job or init
+  container rather than `exec` into a live service, so a backup cannot be affected by whatever
+  else that container is doing.
+
+---
+
 ## Still open - to be decided and recorded
 
 - Two named app services rather than `--scale`, and how a third instance is added live
