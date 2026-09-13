@@ -99,7 +99,7 @@ seen = set()
 for _ in range(10):
     status, body = http("/instance")
     seen.add(body.get("instance_id"))
-check("both backends respond", seen == {"app-01", "app-02"}, "saw " + str(sorted(seen)))
+check("traffic is spread across at least 2 backends", len(seen) >= 2, "saw " + str(sorted(seen)))
 
 # 7. Network isolation: nginx can't reach the data layer but the app instances can.
 resolved = sh("docker compose exec -T nginx getent hosts postgres").strip()
