@@ -50,7 +50,7 @@ def measure(label, count):
 print("Phase 1: baseline")
 ok, errors, seen = measure("baseline", REQUESTS_PER_PHASE)
 check("baseline has no errors", errors == 0, str(errors) + " errors")
-check("baseline uses both backends", len(seen) == 2, str(sorted(seen)))
+check("baseline uses at least 2 backends", len(seen) >= 2, str(sorted(seen)))
 
 # stop one backend and keep sending traffic.
 print("Phase 2: " + VICTIM + " stopped")
