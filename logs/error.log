@@ -13,7 +13,7 @@
 2026/08/20 11:06:02 [error] 31#31: *146 connect() failed (111: Connection refused) while connecting to upstream, request_id=lab-000146, request: "GET /health HTTP/1.1", upstream: "http://172.23.0.12:8080/health"
 2026/08/20 11:06:07 [error] 31#31: *148 connect() failed (111: Connection refused) while connecting to upstream, request_id=lab-000148, request: "GET /ready HTTP/1.1", upstream: "http://172.23.0.12:8080/ready"
 2026/08/20 11:06:12 [error] 31#31: *150 connect() failed (111: Connection refused) while connecting to upstream, request_id=lab-000150, request: "GET /records HTTP/1.1", upstream: "http://172.23.0.12:8080/records"
-2026/08/20 11:06:17 [error] 31#31: *152 connect() failed (111: Connection refused) while connecting to upstream, request_id=lab-000152, request: "GET /counter HTTP/1.1", upstream: "http://172.23.0.12:8080/counter"
+2026/08/20 11:06:17 [error] 31#31: *152 connect() failed (111: Connection refused) while connecting to upstream, request_id=lab-000152, request: "GET /counter HTTP/1.1", up stream: "http://172.23.0.12:8080/counter"
 2026/08/20 11:06:22 [error] 31#31: *154 connect() failed (111: Connection refused) while connecting to upstream, request_id=lab-000154, request: "GET /instance HTTP/1.1", upstream: "http://172.23.0.12:8080/instance"
 2026/08/20 11:06:27 [error] 31#31: *156 connect() failed (111: Connection refused) while connecting to upstream, request_id=lab-000156, request: "GET / HTTP/1.1", upstream: "http://172.23.0.12:8080/"
 2026/08/20 11:06:32 [error] 31#31: *158 connect() failed (111: Connection refused) while connecting to upstream, request_id=lab-000158, request: "GET /health HTTP/1.1", upstream: "http://172.23.0.12:8080/health"

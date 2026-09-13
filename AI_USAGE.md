@@ -96,3 +96,28 @@ happened rather than reconstructed at the end.
   could not demonstrate.
 - **Related commit:** `fix: move credentials to gitignored .env and correct service ports`
   and the documentation commits that follow it.
+
+---
+
+## Entry 5 — Log analysis, written entirely by AI (2026-09-13)
+
+- **Tool/model:** Claude (Opus 5) via Claude Code
+- **Purpose:** Analyse the three supplied historical logs and produce the required answers.
+- **Files or decisions affected:** `scripts/analyze_logs.py` and `log_analysis.md` were **written
+  completely by Claude**. I did not write the script and I did not write the document. This is a
+  larger AI contribution than anywhere else in this task, so I am stating it plainly rather than
+  describing it as assistance.
+- **What you changed or rejected:** I ran the exploratory commands myself first — error counts,
+  errors per minute, failing paths, and the 503 cross-check against `error.log` — and saw the raw
+  output before any document existed. I asked for explanations rather than answers where I did
+  not understand something, specifically what a reverse proxy is and the difference between 502,
+  503 and 504. I stopped the process to add this disclosure rather than let the work stand
+  unattributed.
+- **How you independently verified it:** Every figure in `log_analysis.md` is produced by
+  `scripts/analyze_logs.py`, which anyone can re-run against the unmodified logs in `logs/`. I ran
+  it and compared its output against the ad-hoc commands I had run by hand earlier, and the counts
+  agree. The originals were never edited.
+- **Related commit:** `docs: add log analysis with reproducible script and correlated evidence`
+- **Honest limitation:** I can explain the findings, the three incidents, the choice of
+  denominator and why a 503 differs from a 502. I did not derive the analysis myself and I would
+  not have produced the percentile method or the script structure unaided.
