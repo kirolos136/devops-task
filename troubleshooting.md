@@ -35,6 +35,7 @@ reasoning from reading the files.
 | 24 | availability | `restart: "no"` on the app services, and no restart policy at all on postgres, redis or nginx | fixed and proven |
 | 25 | availability | No CPU or memory limits on any service, so one container could exhaust the host | fixed and proven |
 | 26 | availability | `depends_on` used the list form, which waits only for a container to start, not to become ready | fixed and proven |
+| 27 | health | nginx had no healthcheck at all, so its container never reported a health status; found when the challenge script refused to run because it requires every service to be healthy | fixed and proven |
 
 Status values: found -> confirmed -> fixed and proven.
 
